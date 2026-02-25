@@ -2,7 +2,7 @@
 
 ## Requirements
 - Token must be deployed on Turkchain (chainId 1919)
-- Provide correct address, symbol, decimals, name
+- Provide correct: address, symbol, decimals, name
 - Provide a logo.png
 
 ## Steps (Fork + PR)
@@ -29,8 +29,8 @@
 
 ## Review process
 - Maintainers verify:
-  - address checksum/format
+  - address format
   - decimals match on-chain
   - symbol/name quality
   - logo file exists
-- If approved: PR is merged and token appears in the UI after cache refresh.
+- If approved: PR is merged and token appears in the UI.
