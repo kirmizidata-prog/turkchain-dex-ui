@@ -8,3 +8,7 @@ coverage/
 .env.*
 .DS_Store
 *.log
+
+# runtime/generated
+apps/indexer/state.json
+apps/web/public/pairs.json
