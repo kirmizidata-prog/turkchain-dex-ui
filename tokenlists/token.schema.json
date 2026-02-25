@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Turkchain TokenList",
+  "type": "object",
+  "required": ["name", "tokens"],
+  "properties": {
+    "name": { "type": "string" },
+    "timestamp": { "type": "string" },
+    "version": {
+      "type": "object",
+      "required": ["major", "minor", "patch"],
+      "properties": {
+        "major": { "type": "integer", "minimum": 0 },
+        "minor": { "type": "integer", "minimum": 0 },
+        "patch": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "tokens": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/token" }
+    }
+  },
+  "definitions": {
+    "token": {
+      "type": "object",
+      "required": ["chainId", "address", "symbol", "decimals", "name"],
+      "properties": {
+        "chainId": { "type": "integer", "enum": [1919] },
+        "address": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{40}$"
+        },
+        "symbol": { "type": "string", "minLength": 1, "maxLength": 16 },
+        "decimals": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "logoURI": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
