@@ -34,3 +34,20 @@
   - symbol/name quality
   - logo file exists
 - If approved: PR is merged and token appears in the UI.
+
+## Token listing
+- Docs: tokenlists/README.md
+- Contributing: CONTRIBUTING.md
+- Community list file: tokenlists/lists/community.tokenlist.json
+- Logo path: tokenlists/logos/1919/<address>/logo.png
+
+### Submit token
+Open a token request issue:
+https://github.com/Turkchain1919/turkchain-dex-ui/issues/new?template=token_listing_request.yml
+
+Or submit a PR:
+1) Fork
+2) Add token entry + logo
+3) Open PR
+4) CI must be green (tokenlists-validate)
+5) Maintainers review and merge
