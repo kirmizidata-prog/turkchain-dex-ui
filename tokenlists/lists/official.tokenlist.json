@@ -1,0 +1,23 @@
+{
+  "name": "Turkchain Official Token List",
+  "timestamp": "2026-02-25T00:00:00.000Z",
+  "version": { "major": 1, "minor": 0, "patch": 0 },
+  "tokens": [
+    {
+      "chainId": 1919,
+      "address": "0xa1aCbf1244fBb5cabB0b2ef2c2bB40Dbf89a4794",
+      "symbol": "WTC",
+      "decimals": 18,
+      "name": "Wrapped Turk",
+      "logoURI": "https://raw.githubusercontent.com/Turkchain1919/turkchain-dex-ui/main/tokenlists/logos/1919/0xa1aCbf1244fBb5cabB0b2ef2c2bB40Dbf89a4794/logo.png"
+    },
+    {
+      "chainId": 1919,
+      "address": "0x0347c1a533Bf744d06Cea9Fa308FCe7d9336a29a",
+      "symbol": "USDT",
+      "decimals": 6,
+      "name": "Tether USD (Turkchain)",
+      "logoURI": "https://raw.githubusercontent.com/Turkchain1919/turkchain-dex-ui/main/tokenlists/logos/1919/0x0347c1a533Bf744d06Cea9Fa308FCe7d9336a29a/logo.png"
+    }
+  ]
+}

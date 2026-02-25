@@ -1,0 +1,31 @@
+name: Token listing request
+description: Request a token to be added
+title: "[Token Listing] <SYMBOL> - <ADDRESS>"
+labels: ["token-request"]
+body:
+  - type: input
+    id: address
+    attributes:
+      label: Token contract address
+      placeholder: "0x..."
+    validations:
+      required: true
+  - type: input
+    id: symbol
+    attributes:
+      label: Symbol
+      placeholder: "ABC"
+    validations:
+      required: true
+  - type: input
+    id: decimals
+    attributes:
+      label: Decimals
+      placeholder: "18"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Project info and links
