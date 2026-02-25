@@ -1,29 +1,36 @@
-Contributing: Token Listing
-Requirements
-Token must be deployed on Turkchain (chainId 1919)
-Provide correct: address, symbol, decimals, name
-Provide a logo.png
-Steps (Fork + PR)
-Fork the repo on GitHub.
+# Contributing: Token Listing
 
-Clone your fork locally.
+## Requirements
+- Token must be deployed on Turkchain (chainId 1919)
+- Provide correct: address, symbol, decimals, name
+- Provide a logo.png
 
-Create a branch: git checkout -b add-token-
+## Steps (Fork + PR)
+1) Fork the repo on GitHub.
+2) Clone your fork locally.
+3) Create a branch:
+   git checkout -b add-token-<symbol>
 
-Add token entry to: tokenlists/lists/community.tokenlist.json
+4) Add token entry to:
+   tokenlists/lists/community.tokenlist.json
 
-Add logo file: tokenlists/logos/1919/<token_address>/logo.png
+5) Add logo file:
+   tokenlists/logos/1919/<token_address>/logo.png
 
-Validate JSON locally: node -e "JSON.parse(require('fs').readFileSync('tokenlists/lists/community.tokenlist.json','utf8')); console.log('ok');"
+6) Validate JSON locally:
+   node -e "JSON.parse(require('fs').readFileSync('tokenlists/lists/community.tokenlist.json','utf8')); console.log('ok');"
 
-Commit and push: git add tokenlists git commit -m "Add token" git push origin add-token-
+7) Commit and push:
+   git add tokenlists
+   git commit -m "Add <SYMBOL> token"
+   git push origin add-token-<symbol>
 
-Open a Pull Request from your branch.
+8) Open a Pull Request from your branch.
 
-Review process
-Maintainers verify:
-address format
-decimals match on-chain
-symbol/name quality
-logo file exists
-If approved: PR is merged and token appears in the UI.
+## Review process
+- Maintainers verify:
+  - address format
+  - decimals match on-chain
+  - symbol/name quality
+  - logo file exists
+- If approved: PR is merged and token appears in the UI.
