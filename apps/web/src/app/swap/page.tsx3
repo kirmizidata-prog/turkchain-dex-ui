@@ -1,0 +1,738 @@
+"use client";
+
+import * as React from "react";
+import WalletButton from "@/components/WalletButton";
+import { contracts } from "@/lib/turkchain";
+import { erc20Abi, routerV2Abi } from "@/lib/abis";
+import { publicClient, getWalletClient } from "@/lib/evm";
+import { useWallet } from "@/lib/useWallet";
+import { loadTokenList, type TokenInfo } from "@/lib/tokenlist";
+import { formatUnits, parseUnits, type Address, isAddress, zeroAddress } from "viem";
+
+const TURKSCAN_TX = "https://turkscan.com/tx/";
+
+const factoryAbi = [
+  {
+    type: "function",
+    name: "getPair",
+    stateMutability: "view",
+    inputs: [
+      { name: "tokenA", type: "address" },
+      { name: "tokenB", type: "address" }
+    ],
+    outputs: [{ name: "pair", type: "address" }]
+  }
+] as const;
+
+const pairAbi = [
+  {
+    type: "function",
+    name: "token0",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }]
+  },
+  {
+    type: "function",
+    name: "token1",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }]
+  },
+  {
+    type: "function",
+    name: "getReserves",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "reserve0", type: "uint112" },
+      { name: "reserve1", type: "uint112" },
+      { name: "blockTimestampLast", type: "uint32" }
+    ]
+  }
+] as const;
+
+function applySlippage(amountOut: bigint, bps: number) {
+  return (amountOut * BigInt(10000 - bps)) / BigInt(10000);
+}
+
+function shortAddr(a: string) {
+  if (!a) return "-";
+  return a.slice(0, 6) + "..." + a.slice(-4);
+}
+
+function bnMaxUint256() {
+  return (1n << 256n) - 1n;
+}
+
+function bnTwoPow255() {
+  return 1n << 255n;
+}
+
+function formatAllowance(allow: bigint | null, decimals: number) {
+  if (allow === null) return "-";
+  if (allow >= bnTwoPow255()) return "Unlimited";
+  return formatUnits(allow, decimals);
+}
+
+
+// UniswapV2 amountOut formula (fee 0.3% -> 997/1000)
+function calcAmountOut(amountIn: bigint, reserveIn: bigint, reserveOut: bigint) {
+  if (amountIn <= 0n) return 0n;
+  if (reserveIn <= 0n || reserveOut <= 0n) return 0n;
+  const amountInWithFee = amountIn * 997n;
+  const numerator = amountInWithFee * reserveOut;
+  const denominator = reserveIn * 1000n + amountInWithFee;
+  if (denominator === 0n) return 0n;
+  return numerator / denominator;
+}
+
+function calcPriceImpactBps(amountIn: bigint, amountOut: bigint, reserveIn: bigint, reserveOut: bigint) {
+  // priceImpact = (midPrice - execPrice) / midPrice
+  // midPrice = reserveOut / reserveIn
+  // execPrice = amountOut / amountIn (out per in)
+  // Use bps with integer math:
+  // impact = 1 - (amountOut * reserveIn) / (amountIn * reserveOut)
+  if (amountIn <= 0n || amountOut <= 0n) return 0;
+  if (reserveIn <= 0n || reserveOut <= 0n) return 0;
+
+  const left = amountOut * reserveIn; // out * reserveIn
+  const right = amountIn * reserveOut; // in * reserveOut
+  if (right === 0n) return 0;
+
+  // ratio = left/right. impact = 1 - ratio.
+  // bps = (1 - ratio) * 10000
+  // => bps = (right - left) * 10000 / right
+  if (left >= right) return 0;
+  const bps = Number(((right - left) * 10000n) / right);
+  return Math.max(0, Math.min(10000, bps));
+}
+
+export default function SwapPage() {
+  const { address, chainId } = useWallet();
+
+  const [tokenList, setTokenList] = React.useState<TokenInfo[]>([]);
+  const [inToken, setInToken] = React.useState<TokenInfo | null>(null);
+  const [outToken, setOutToken] = React.useState<TokenInfo | null>(null);
+
+  const [amountInStr, setAmountInStr] = React.useState("0.1");
+  const [quoteOut, setQuoteOut] = React.useState<bigint | null>(null);
+
+  const [balIn, setBalIn] = React.useState<bigint | null>(null);
+  const [balOut, setBalOut] = React.useState<bigint | null>(null);
+  const [allowIn, setAllowIn] = React.useState<bigint | null>(null);
+
+  const [slippageBps, setSlippageBps] = React.useState(100); // 1.00%
+  const [useMaxApproval, setUseMaxApproval] = React.useState(true);
+
+  const [minOut, setMinOut] = React.useState<bigint | null>(null);
+  const [priceImpactBps, setPriceImpactBps] = React.useState<number | null>(null);
+  const [routePath, setRoutePath] = React.useState<Address[] | null>(null);
+
+  const WTC: Address = "0xa1aCbf1244fBb5cabB0b2ef2c2bB40Dbf89a4794";
+  const [isQuoting, setIsQuoting] = React.useState<boolean>(false);
+  const [confirmHighImpact, setConfirmHighImpact] = React.useState<boolean>(false);
+
+  const [txHash, setTxHash] = React.useState<string>("");
+  const [status, setStatus] = React.useState<string>("");
+  const [isPending, setIsPending] = React.useState<boolean>(false);
+
+  React.useEffect(() => {
+  (async () => {
+    try {
+      const list = await loadTokenList();
+      setTokenList(list);
+      if (list.length >= 2) {
+        setInToken(list[0]);
+        setOutToken(list[1]);
+      } else if (list.length === 1) {
+        setInToken(list[0]);
+      }
+    } catch (e: any) {
+      setStatus(e?.message || "tokenlist_load_failed");
+    }
+  })();
+}, []);
+async function refreshWallet() {
+    try {
+      if (!address || !isAddress(address) || !inToken || !outToken) {
+        setBalIn(null);
+        setBalOut(null);
+        setAllowIn(null);
+        return;
+      }
+
+      const [bIn, bOut, aIn] = await Promise.all([
+        publicClient.readContract({
+          address: inToken.address,
+          abi: erc20Abi,
+          functionName: "balanceOf",
+          args: [address as Address]
+        }),
+        publicClient.readContract({
+          address: outToken.address,
+          abi: erc20Abi,
+          functionName: "balanceOf",
+          args: [address as Address]
+        }),
+        publicClient.readContract({
+          address: inToken.address,
+          abi: erc20Abi,
+          functionName: "allowance",
+          args: [address as Address, contracts.router]
+        })
+      ]);
+
+      setBalIn(bIn as bigint);
+      setBalOut(bOut as bigint);
+      setAllowIn(aIn as bigint);
+    } catch (e: any) {
+      setStatus(e?.shortMessage || e?.message || "wallet_refresh_failed");
+    }
+  }
+
+    async function fetchQuoteAndMetrics() {
+      setStatus("");
+      setTxHash("");
+      setQuoteOut(null);
+      setMinOut(null);
+      setPriceImpactBps(null);
+      setRoutePath(null);
+      setConfirmHighImpact(false);
+      setIsQuoting(true);
+
+      try {
+        if (!inToken || !outToken) return;
+        if (inToken.address.toLowerCase() === outToken.address.toLowerCase()) {
+          setStatus("same_token");
+          return;
+        }
+
+        const amountIn = parseUnits(amountInStr || "0", inToken.decimals);
+        if (amountIn <= 0n) return;
+
+        const directPath: Address[] = [inToken.address as Address, outToken.address as Address];
+        const pathsToTry: Address[][] = [directPath];
+
+        const inIsWtc = inToken.address.toLowerCase() === WTC.toLowerCase();
+        const outIsWtc = outToken.address.toLowerCase() === WTC.toLowerCase();
+        if (!inIsWtc && !outIsWtc) {
+          pathsToTry.push([inToken.address as Address, WTC, outToken.address as Address]);
+        }
+
+        let bestOut: bigint = 0n;
+        let bestPath: Address[] | null = null;
+
+        for (const path of pathsToTry) {
+          try {
+            const amts = await publicClient.readContract({
+              address: contracts.router,
+              abi: routerV2Abi,
+              functionName: "getAmountsOut",
+              args: [amountIn, path]
+            });
+            const out = (amts as readonly bigint[])[path.length - 1] ?? 0n;
+            if (out > bestOut) {
+              bestOut = out;
+              bestPath = path;
+            }
+          } catch {
+            // ignore path errors
+          }
+        }
+
+        if (!bestPath || bestOut <= 0n) {
+          setStatus("no_quote");
+          return;
+        }
+
+        setRoutePath(bestPath);
+        setQuoteOut(bestOut);
+
+        const mo = applySlippage(bestOut, slippageBps);
+        setMinOut(mo);
+
+        // Price impact (bps)
+        if (bestPath.length === 2) {
+          const pair = (await publicClient.readContract({
+            address: contracts.factory,
+            abi: factoryAbi,
+            functionName: "getPair",
+            args: [bestPath[0], bestPath[1]]
+          })) as Address;
+
+          if (!pair || pair.toLowerCase() === zeroAddress) {
+            setPriceImpactBps(null);
+            return;
+          }
+
+          const [t0, t1, reserves] = await Promise.all([
+            publicClient.readContract({ address: pair, abi: pairAbi, functionName: "token0" }) as Promise<Address>,
+            publicClient.readContract({ address: pair, abi: pairAbi, functionName: "token1" }) as Promise<Address>,
+            publicClient.readContract({ address: pair, abi: pairAbi, functionName: "getReserves" }) as Promise<readonly [bigint, bigint, number]>
+          ]);
+
+          const reserve0 = BigInt(reserves[0]);
+          const reserve1 = BigInt(reserves[1]);
+
+          let reserveIn = 0n;
+          let reserveOut = 0n;
+
+          if (bestPath[0].toLowerCase() === t0.toLowerCase() && bestPath[1].toLowerCase() === t1.toLowerCase()) {
+            reserveIn = reserve0;
+            reserveOut = reserve1;
+          } else if (bestPath[0].toLowerCase() === t1.toLowerCase() && bestPath[1].toLowerCase() === t0.toLowerCase()) {
+            reserveIn = reserve1;
+            reserveOut = reserve0;
+          } else {
+            setPriceImpactBps(null);
+            return;
+          }
+
+          const outModel = calcAmountOut(amountIn, reserveIn, reserveOut);
+          const pibps = calcPriceImpactBps(amountIn, outModel, reserveIn, reserveOut);
+          setPriceImpactBps(pibps);
+          return;
+        }
+
+        if (bestPath.length === 3) {
+          const a = bestPath[0];
+          const b = bestPath[1];
+          const c = bestPath[2];
+
+          const [pair1, pair2] = await Promise.all([
+            publicClient.readContract({ address: contracts.factory, abi: factoryAbi, functionName: "getPair", args: [a, b] }) as Promise<Address>,
+            publicClient.readContract({ address: contracts.factory, abi: factoryAbi, functionName: "getPair", args: [b, c] }) as Promise<Address>
+          ]);
+
+          if (!pair1 || pair1.toLowerCase() === zeroAddress || !pair2 || pair2.toLowerCase() === zeroAddress) {
+            setPriceImpactBps(null);
+            return;
+          }
+
+          const [[t0a, t1a, ra], [t0b, t1b, rb]] = await Promise.all([
+            Promise.all([
+              publicClient.readContract({ address: pair1, abi: pairAbi, functionName: "token0" }) as Promise<Address>,
+              publicClient.readContract({ address: pair1, abi: pairAbi, functionName: "token1" }) as Promise<Address>,
+              publicClient.readContract({ address: pair1, abi: pairAbi, functionName: "getReserves" }) as Promise<readonly [bigint, bigint, number]>
+            ]),
+            Promise.all([
+              publicClient.readContract({ address: pair2, abi: pairAbi, functionName: "token0" }) as Promise<Address>,
+              publicClient.readContract({ address: pair2, abi: pairAbi, functionName: "token1" }) as Promise<Address>,
+              publicClient.readContract({ address: pair2, abi: pairAbi, functionName: "getReserves" }) as Promise<readonly [bigint, bigint, number]>
+            ])
+          ]);
+
+          const r0a = BigInt(ra[0]);
+          const r1a = BigInt(ra[1]);
+          const r0b = BigInt(rb[0]);
+          const r1b = BigInt(rb[1]);
+
+          let rIn1 = 0n, rOut1 = 0n;
+          if (a.toLowerCase() === t0a.toLowerCase() && b.toLowerCase() === t1a.toLowerCase()) {
+            rIn1 = r0a; rOut1 = r1a;
+          } else if (a.toLowerCase() === t1a.toLowerCase() && b.toLowerCase() === t0a.toLowerCase()) {
+            rIn1 = r1a; rOut1 = r0a;
+          } else {
+            setPriceImpactBps(null);
+            return;
+          }
+
+          let rIn2 = 0n, rOut2 = 0n;
+          if (b.toLowerCase() === t0b.toLowerCase() && c.toLowerCase() === t1b.toLowerCase()) {
+            rIn2 = r0b; rOut2 = r1b;
+          } else if (b.toLowerCase() === t1b.toLowerCase() && c.toLowerCase() === t0b.toLowerCase()) {
+            rIn2 = r1b; rOut2 = r0b;
+          } else {
+            setPriceImpactBps(null);
+            return;
+          }
+
+          if (rIn1 <= 0n || rOut1 <= 0n || rIn2 <= 0n || rOut2 <= 0n) {
+            setPriceImpactBps(null);
+            return;
+          }
+
+          const out1 = calcAmountOut(amountIn, rIn1, rOut1);
+          const out2 = calcAmountOut(out1, rIn2, rOut2);
+
+          const scale = 1000000000000000000n;
+          const execScaled = (out2 * scale) / amountIn;
+          const midScaled = (((rOut1 * rOut2) * scale) / (rIn1 * rIn2));
+
+          if (midScaled <= 0n) {
+            setPriceImpactBps(null);
+            return;
+          }
+
+          let pibps = 0n;
+          if (midScaled > execScaled) {
+            pibps = ((midScaled - execScaled) * 10000n) / midScaled;
+          }
+
+          const pibpsNum = Number(pibps);
+          setPriceImpactBps(Number.isFinite(pibpsNum) ? pibpsNum : null);
+          return;
+        }
+
+        setPriceImpactBps(null);
+      } catch (e: any) {
+        setStatus(e?.shortMessage || e?.message || "quote_failed");
+      } finally {
+        setIsQuoting(false);
+      }
+    }
+
+    React.useEffect(() => {
+    const t = setTimeout(() => {
+      void fetchQuoteAndMetrics();
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [amountInStr, slippageBps, inToken?.address, outToken?.address]);
+
+  function needsApproval(amountIn: bigint) {
+    return (allowIn ?? 0n) < amountIn;
+  }
+
+  async function doApprove() {
+    if (isPending) return;
+    setStatus("");
+    setTxHash("");
+
+    try {
+      if (!address) return setStatus("connect_wallet");
+      if (chainId !== 1919) return setStatus("wrong_network");
+      if (!inToken) return setStatus("select_token");
+
+      const amountIn = parseUnits(amountInStr || "0", inToken.decimals);
+      if (amountIn <= 0n) return setStatus("invalid_amount");
+
+      const wc = getWalletClient();
+      if (!wc) return setStatus("no_wallet_client");
+
+      const approveAmount = useMaxApproval ? bnMaxUint256() : amountIn;
+
+      setStatus("approving");
+      const hash = await wc.writeContract({
+        address: inToken.address,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [contracts.router, approveAmount],
+        account: address as Address
+      });
+
+      setTxHash(hash);
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      setStatus(receipt.status === "success" ? "approve_success" : "approve_failed");
+
+      await refreshWallet();
+    } catch (e: any) {
+      setStatus(e?.shortMessage || e?.message || "approve_error");
+    }
+  }
+
+  async function doSwap() {
+    if (isPending) return;
+    setStatus("");
+    setTxHash("");
+
+    try {
+      if (!address) return setStatus("connect_wallet");
+      if (chainId !== 1919) return setStatus("wrong_network");
+      if (!inToken || !outToken) return setStatus("select_tokens");
+      if (inToken.address.toLowerCase() === outToken.address.toLowerCase()) return setStatus("same_token");
+
+      const amountIn = parseUnits(amountInStr || "0", inToken.decimals);
+      if (amountIn <= 0n) return setStatus("invalid_amount");
+
+      if (needsApproval(amountIn)) return setStatus("need_approval");
+
+      if (priceImpactBps !== null && priceImpactBps >= 500 && !confirmHighImpact) {
+        setConfirmHighImpact(true);
+        return setStatus("confirm_high_impact");
+      }
+
+      const q = quoteOut ?? 0n;
+      if (q <= 0n) return setStatus("no_quote");
+
+      const mo = minOut ?? applySlippage(q, slippageBps);
+      const deadline = BigInt(Math.floor(Date.now() / 1000) + 600);
+
+      const wc = getWalletClient();
+      if (!wc) return setStatus("no_wallet_client");
+
+
+      const path: Address[] = (routePath && routePath.length >= 2)
+        ? routePath
+        : [inToken.address as Address, outToken!.address as Address];
+
+      setIsPending(true);
+      setStatus("swapping");
+      const hash = await wc.writeContract({
+        address: contracts.router,
+        abi: routerV2Abi,
+        functionName: "swapExactTokensForTokens",
+          args: [amountIn, mo, path, address as Address, deadline],
+        account: address as Address
+      });
+
+      setTxHash(hash);
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      setStatus(receipt.status === "success" ? "swap_success" : "swap_failed");
+
+      await refreshWallet();
+      await fetchQuoteAndMetrics();
+    } catch (e: any) {
+      setStatus(e?.shortMessage || e?.message || "swap_error");
+    }
+    finally {
+      setIsPending(false);
+    }
+
+  }
+
+  const amountInParsed = React.useMemo(() => {
+    try {
+      if (!inToken) return 0n;
+      return parseUnits(amountInStr || "0", inToken.decimals);
+    } catch {
+      return 0n;
+    }
+  }, [amountInStr, inToken]);
+
+  const needApprove = React.useMemo(() => {
+    if (!inToken) return false;
+    if (amountInParsed <= 0n) return false;
+    return needsApproval(amountInParsed);
+  }, [allowIn, amountInParsed, inToken]);
+
+  const insufficientBalance = React.useMemo(() => {
+    if (!address || !isAddress(address)) return false;
+    if (!inToken) return false;
+    if (amountInParsed <= 0n) return false;
+    if (balIn === null) return true;
+    return balIn < amountInParsed;
+  }, [address, balIn, amountInParsed, inToken]);
+
+  React.useEffect(() => {
+    setConfirmHighImpact(false);
+    if (status === "confirm_high_impact") setStatus("");
+  }, [amountInStr, inToken?.address, outToken?.address]);
+
+
+  const canSwap = React.useMemo(() => {
+    if (!address || !isAddress(address)) return false;
+    if (chainId !== 1919) return false;
+    if (!inToken || !outToken) return false;
+    if (amountInParsed <= 0n) return false;
+    if ((quoteOut ?? 0n) <= 0n) return false;
+    if (needApprove) return false;
+    if (insufficientBalance) return false;
+    if (isPending) return false;
+    return true;
+  }, [address, chainId, inToken, outToken, amountInParsed, quoteOut, needApprove, insufficientBalance, isPending]);
+
+  const statusLabel = React.useMemo(() => {
+    if (!status) return "";
+    const m: Record<string, string> = {
+      connect_wallet: "Connect wallet",
+      wrong_network: "Wrong network (switch to Turkchain 1919)",
+      select_token: "Select token",
+      select_tokens: "Select tokens",
+      same_token: "Select different tokens",
+      invalid_amount: "Enter a valid amount",
+      no_quote: "No quote available (check liquidity)",
+      need_approval: "Approval required before swap",
+      approving: "Approving...",
+      approve_success: "Approve success",
+      approve_failed: "Approve failed",
+      swapping: "Swapping...",
+      swap_success: "Swap success",
+      swap_failed: "Swap failed",
+      confirm_high_impact: "High price impact. Click Swap again to confirm.",
+    };
+  }, [status]);
+
+  return (
+    <main className="min-h-screen flex items-center justify-center p-6">
+      <div className="w-full max-w-2xl rounded-2xl border p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-semibold">Swap</h1>
+            <div className="mt-1 text-xs opacity-70">Router: {shortAddr(contracts.router)}</div>
+          </div>
+          <WalletButton />
+        </div>
+
+        <div className="mt-5 flex flex-wrap gap-2">
+          <a className="rounded-xl border px-4 py-2 text-sm" href="/">Home</a>
+          <a className="rounded-xl border px-4 py-2 text-sm" href="/pool">Pool</a>
+          <a className="rounded-xl border px-4 py-2 text-sm" href="/positions">My Pools</a>
+        </div>
+
+        <div className="mt-6 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div>
+            <label className="text-xs opacity-70">From</label>
+            <select
+              className="mt-1 w-full rounded-xl border px-3 py-2"
+              value={inToken?.address ?? ""}
+              onChange={(e) => {
+                const t = tokenList.find((x) => x.address === (e.target.value as Address)) || null;
+                setInToken(t);
+              }}
+            >
+              <option value="" disabled>Select token</option>
+              {tokenList.map((t) => (
+                <option key={t.address} value={t.address}>
+                  {t.symbol} ({t.address.slice(0, 6)}...{t.address.slice(-4)})
+                </option>
+              ))}
+            </select>
+            <div className="mt-1 text-xs opacity-70">
+              Balance: {inToken && balIn !== null ? formatUnits(balIn, inToken.decimals) : "-"}
+            </div>
+            <div className="mt-1 text-xs opacity-70">
+              Allowance: {inToken ? formatAllowance(allowIn, inToken.decimals) : "-"}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs opacity-70">To</label>
+            <select
+              className="mt-1 w-full rounded-xl border px-3 py-2"
+              value={outToken?.address ?? ""}
+              onChange={(e) => {
+                const t = tokenList.find((x) => x.address === (e.target.value as Address)) || null;
+                setOutToken(t);
+              }}
+            >
+              <option value="" disabled>Select token</option>
+              {tokenList.map((t) => (
+                <option key={t.address} value={t.address}>
+                  {t.symbol} ({t.address.slice(0, 6)}...{t.address.slice(-4)})
+                </option>
+              ))}
+            </select>
+            <div className="mt-1 text-xs opacity-70">
+              Balance: {outToken && balOut !== null ? formatUnits(balOut, outToken.decimals) : "-"}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 space-y-3">
+          <div>
+            <label className="text-xs opacity-70">Amount In</label>
+            <input
+              className="mt-1 w-full rounded-xl border px-3 py-2"
+              value={amountInStr}
+              onChange={(e) => setAmountInStr(e.target.value)}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div>
+              <label className="text-xs opacity-70">Slippage (%)</label>
+              <input
+                className="mt-1 w-full rounded-xl border px-3 py-2"
+                value={String(slippageBps / 100)}
+                onChange={(e) => {
+                  const v = Number(e.target.value || "1");
+                  const bps = Math.max(0, Math.min(500, Math.floor(v * 100)));
+                  setSlippageBps(bps);
+                }}
+              />
+            </div>
+
+            <div className="flex items-end gap-2">
+              <label className="flex items-center gap-2 text-xs opacity-70">
+                <input
+                  type="checkbox"
+                  checked={useMaxApproval}
+                  onChange={(e) => setUseMaxApproval(e.target.checked)}
+                />
+                Max approval
+              </label>
+            </div>
+          </div>
+
+          <div className="rounded-xl border p-4 text-sm space-y-1">
+            <div className="opacity-80">
+              Quote Out:{" "}
+              {outToken && quoteOut !== null ? formatUnits(quoteOut, outToken.decimals) : "-"}{" "}
+              {outToken?.symbol ?? ""}
+            </div>
+            <div className="opacity-80">
+              Min received:{" "}
+              {outToken && minOut !== null ? formatUnits(minOut, outToken.decimals) : "-"}{" "}
+              {outToken?.symbol ?? ""}
+            </div>
+            <div className="opacity-80">
+              Price impact:{" "}
+              {priceImpactBps === null ? "-" : (priceImpactBps / 100).toFixed(2) + "%"}
+            </div>
+            <div className="opacity-80">
+              Route:{" "}
+              {inToken?.symbol ?? "?"} {"->"} {outToken?.symbol ?? "?"}
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              className="rounded-xl border px-4 py-2 text-sm"
+              onClick={() => {
+                const a = inToken;
+                const b = outToken;
+                setInToken(b);
+                setOutToken(a);
+              }}
+            >
+              Flip
+            </button>
+
+            <button
+              className={"rounded-xl border px-4 py-2 text-sm " + ((!needApprove || isPending) ? "opacity-50 cursor-not-allowed" : "")}
+              onClick={doApprove}
+              disabled={!needApprove || isPending}
+              title={needApprove ? "Approve token" : "No approval needed"}
+            >
+              Approve
+            </button>
+
+            <button
+              className={"ml-auto rounded-xl bg-black px-4 py-2 text-sm text-white " + (!canSwap ? "opacity-50 cursor-not-allowed" : "")}
+              onClick={doSwap}
+              disabled={!canSwap}
+              title={needApprove ? "Approve first" : "Swap"}
+            >
+              {confirmHighImpact ? "Swap anyway" : "Swap"}
+            </button>
+          </div>
+
+          <button
+            className="rounded-xl border px-4 py-2 text-sm"
+            onClick={async () => {
+              await refreshWallet();
+              await fetchQuoteAndMetrics();
+            }}
+          >
+            Refresh
+          </button>
+        </div>
+
+        {txHash ? (
+          <div className="mt-4 rounded-xl border p-3 text-xs opacity-80">
+            Tx:{" "}
+            <a className="underline" target="_blank" rel="noreferrer" href={TURKSCAN_TX + txHash}>
+              {shortAddr(txHash)}
+            </a>
+          </div>
+        ) : null}
+
+        {statusLabel ? (
+          <div className="mt-3 rounded-xl border p-3 text-xs opacity-80">Status: {statusLabel}</div>
+        ) : null}
+      </div>
+    </main>
+  );
+}

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /root/turkchain-dex-ui/apps/indexer
+while true; do
+  bun run index:pairs || true
+  sleep 60
+done

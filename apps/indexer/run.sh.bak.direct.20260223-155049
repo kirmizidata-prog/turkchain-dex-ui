@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOCK_FILE="/var/lock/turkchain-indexer.lock"
+LOG_FILE="/var/log/turkchain-indexer.log"
+
+export RPC_URL="https://rpc.turkchain1919.com"
+export FACTORY="0xCb8A04a9Cd9a0Cbdf7E4f9f23caA4d206e98aef7"
+export OUT_FILE="/root/turkchain-dex-ui/apps/web/public/pairs.json"
+export STATE_FILE="/root/turkchain-dex-ui/apps/indexer/state.json"
+
+export START_BLOCK="1"
+export REORG_BUFFER="64"
+
+# Start optimistic; indexer will persist-shrink if RPC rejects ranges
+export CHUNK="20000"
+
+cd /root/turkchain-dex-ui/apps/indexer
+
+mkdir -p "$(dirname "$LOG_FILE")"
+mkdir -p "$(dirname "$LOCK_FILE")"
+
+# Single instance guarantee
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "$(date -Is) already_running lock=$LOCK_FILE" >> "$LOG_FILE"
+  exit 0
+fi
+
+echo "$(date -Is) start rpc=$RPC_URL factory=$FACTORY chunk=$CHUNK reorg=$REORG_BUFFER" >> "$LOG_FILE"
+
+set +e
+/root/.bun/bin/bun run index >> "$LOG_FILE" 2>&1
+RC=$?
+set -e
+
+echo "$(date -Is) end rc=$RC" >> "$LOG_FILE"
+exit "$RC"

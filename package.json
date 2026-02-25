@@ -1,0 +1,9 @@
+{
+  "name": "turkchain-dex-ui",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "services/*"
+  ]
+}

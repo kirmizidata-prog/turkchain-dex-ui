@@ -1,0 +1,43 @@
+import WalletButton from "@/components/WalletButton";
+
+export default function Home() {
+  return (
+    <main className="min-h-screen flex items-center justify-center">
+      <div className="w-full max-w-md rounded-2xl border p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <h1 className="text-xl font-semibold">Turkchain DEX</h1>
+          <WalletButton />
+        </div>
+
+        <div className="mt-6 space-y-1 text-sm opacity-80">
+          <div>ChainId: 1919</div>
+          <div>RPC: rpc.turkchain1919.com</div>
+          <div>Explorer: turkscan.com</div>
+        </div>
+
+        <div className="mt-6 grid grid-cols-1 gap-3">
+          <a
+            className="inline-flex w-full items-center justify-center rounded-xl bg-black px-4 py-2 text-white"
+            href="/swap"
+          >
+            Open Swap
+          </a>
+
+          <a
+            className="inline-flex w-full items-center justify-center rounded-xl border px-4 py-2"
+            href="/pool"
+          >
+            Open Pool
+          </a>
+
+          <a
+            className="inline-flex w-full items-center justify-center rounded-xl border px-4 py-2"
+            href="/positions"
+          >
+            My Pools
+          </a>
+        </div>
+      </div>
+    </main>
+  );
+}

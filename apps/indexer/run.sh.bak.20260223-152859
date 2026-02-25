@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export RPC_URL="https://rpc.turkchain1919.com"
+export FACTORY="0xCb8A04a9Cd9a0Cbdf7E4f9f23caA4d206e98aef7"
+export OUT_FILE="/root/turkchain-dex-ui/apps/web/public/pairs.json"
+export STATE_FILE="/root/turkchain-dex-ui/apps/indexer/state.json"
+export START_BLOCK="1"
+export CHUNK="5000"
+
+cd /root/turkchain-dex-ui/apps/indexer
+bun run index

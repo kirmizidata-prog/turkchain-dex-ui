@@ -1,0 +1,11 @@
+{
+  "name": "turkchain-indexer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "index": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "viem": "^2.19.5"
+  }
+}

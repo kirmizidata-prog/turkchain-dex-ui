@@ -1,0 +1,12 @@
+{
+  "chainId": 1919,
+  "factory": "0xCb8A04a9Cd9a0Cbdf7E4f9f23caA4d206e98aef7",
+  "updatedAt": "2026-02-25T01:58:02.237Z",
+  "pairs": [
+    {
+      "pair": "0x5a2D8eB7bF5343d2B0836D9C22D4426Cc9f21b38",
+      "token0": "0x0347c1a533Bf744d06Cea9Fa308FCe7d9336a29a",
+      "token1": "0xa1aCbf1244fBb5cabB0b2ef2c2bB40Dbf89a4794"
+    }
+  ]
+}

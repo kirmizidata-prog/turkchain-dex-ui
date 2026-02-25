@@ -1,0 +1,302 @@
+"use client";
+
+import * as React from "react";
+import WalletButton from "@/components/WalletButton";
+import { contracts } from "@/lib/turkchain";
+import { useWallet } from "@/lib/useWallet";
+import { multicallRead } from "@/lib/multicall";
+import { erc20Abi, pairAbi } from "@/lib/abis";
+import { formatUnits, isAddress, type Address } from "viem";
+
+type PairRow = {
+  pair: Address;
+  token0: Address;
+  token1: Address;
+};
+
+type PairsJson = {
+  chainId: number;
+  factory: string;
+  updatedAt: string;
+  pairs: Array<{ pair: string; token0: string; token1: string }>;
+};
+
+type Row = {
+  pair: Address;
+  token0: Address;
+  token1: Address;
+  symbol0: string;
+  symbol1: string;
+  decimals0: number;
+  decimals1: number;
+  reserve0: bigint;
+  reserve1: bigint;
+  lpBalance: bigint;
+};
+
+function shortAddr(a: string) {
+  if (!a) return "-";
+  return a.slice(0, 6) + "..." + a.slice(-4);
+}
+
+function safeSymFromAddr(a: Address) {
+  return a.slice(0, 6) + "..." + a.slice(-4);
+}
+
+function safeNum(x: any, fallback: number) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < 0) return fallback;
+  return n;
+}
+
+export default function PositionsPage() {
+  const { address } = useWallet();
+
+  const [limit, setLimit] = React.useState<number>(500);
+  const [status, setStatus] = React.useState<string>("");
+  const [pairsMeta, setPairsMeta] = React.useState<{ updatedAt: string; count: number } | null>(null);
+  const [rows, setRows] = React.useState<Row[]>([]);
+
+  const load = React.useCallback(async () => {
+    setStatus("");
+    setRows([]);
+
+    if (!address || !isAddress(address)) {
+      setStatus("wallet_not_connected");
+      return;
+    }
+
+    let pj: PairsJson;
+    try {
+      const res = await fetch("/pairs.json", { cache: "no-store" });
+      if (!res.ok) {
+        setStatus("pairs_json_fetch_failed");
+        return;
+      }
+      pj = (await res.json()) as PairsJson;
+    } catch {
+      setStatus("pairs_json_parse_failed");
+      return;
+    }
+
+    const rawPairs = Array.isArray(pj.pairs) ? pj.pairs : [];
+    const pairs: PairRow[] = rawPairs
+      .slice(0, Math.max(0, Number(limit) || 0))
+      .map((p) => ({
+        pair: p.pair as Address,
+        token0: p.token0 as Address,
+        token1: p.token1 as Address
+      }))
+      .filter((p) => isAddress(p.pair) && isAddress(p.token0) && isAddress(p.token1));
+
+    setPairsMeta({ updatedAt: String(pj.updatedAt || ""), count: pairs.length });
+
+    if (pairs.length === 0) {
+      setStatus("no_pairs_in_pairs_json");
+      return;
+    }
+
+    // unique tokens for symbol/decimals calls
+    const tokenSet = new Map<string, Address>();
+    for (const p of pairs) {
+      tokenSet.set(p.token0.toLowerCase(), p.token0);
+      tokenSet.set(p.token1.toLowerCase(), p.token1);
+    }
+    const tokens = Array.from(tokenSet.values());
+
+    try {
+      setStatus("loading_multicall");
+
+      // 1) symbols + decimals for tokens
+      const symCalls = tokens.map((t) => ({
+        target: t,
+        abi: erc20Abi as any,
+        functionName: "symbol",
+        args: []
+      }));
+
+      const decCalls = tokens.map((t) => ({
+        target: t,
+        abi: erc20Abi as any,
+        functionName: "decimals",
+        args: []
+      }));
+
+      const [symRes, decRes] = await Promise.all([multicallRead(symCalls), multicallRead(decCalls)]);
+
+      const symMap = new Map<string, string>();
+      const decMap = new Map<string, number>();
+
+      for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+
+        const sr = symRes[i];
+        const sv = sr && sr.ok ? (sr.value as any) : null;
+        const sym = typeof sv === "string" && sv.length > 0 ? sv : safeSymFromAddr(t);
+        symMap.set(t.toLowerCase(), sym);
+
+        const dr = decRes[i];
+        const dv = dr && dr.ok ? (dr.value as any) : null;
+        const dec = safeNum(dv, 18);
+        decMap.set(t.toLowerCase(), dec);
+      }
+
+      // 2) per pair: LP balance + reserves
+      const pairCalls = pairs.flatMap((p) => [
+        {
+          target: p.pair,
+          abi: pairAbi as any,
+          functionName: "balanceOf",
+          args: [address as Address]
+        },
+        {
+          target: p.pair,
+          abi: pairAbi as any,
+          functionName: "getReserves",
+          args: []
+        }
+      ]);
+
+      const pairRes = await multicallRead(pairCalls);
+
+      const out: Row[] = [];
+      for (let i = 0; i < pairs.length; i++) {
+        const p = pairs[i];
+        const balIdx = i * 2;
+        const resIdx = i * 2 + 1;
+
+        const balOk = pairRes[balIdx]?.ok;
+        const resOk = pairRes[resIdx]?.ok;
+
+        const lpBal = balOk ? (pairRes[balIdx].value as any as bigint) : 0n;
+        if (lpBal <= 0n) continue;
+
+        let reserve0 = 0n;
+        let reserve1 = 0n;
+
+        if (resOk) {
+          const rr = pairRes[resIdx].value as any;
+          reserve0 = BigInt(rr?.[0] ?? 0);
+          reserve1 = BigInt(rr?.[1] ?? 0);
+        }
+
+        const symbol0 = symMap.get(p.token0.toLowerCase()) || safeSymFromAddr(p.token0);
+        const symbol1 = symMap.get(p.token1.toLowerCase()) || safeSymFromAddr(p.token1);
+
+        const decimals0 = decMap.get(p.token0.toLowerCase()) ?? 18;
+        const decimals1 = decMap.get(p.token1.toLowerCase()) ?? 18;
+
+        out.push({
+          pair: p.pair,
+          token0: p.token0,
+          token1: p.token1,
+          symbol0,
+          symbol1,
+          decimals0,
+          decimals1,
+          reserve0,
+          reserve1,
+          lpBalance: lpBal
+        });
+      }
+
+      setRows(out);
+      setStatus(out.length ? "ok" : "no_positions_found");
+    } catch (e: any) {
+      setStatus(e?.shortMessage || e?.message || "multicall_failed");
+    }
+  }, [address, limit]);
+
+  React.useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <main className="min-h-screen flex items-start justify-center p-6">
+      <div className="w-full max-w-3xl rounded-2xl border p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-semibold">My Pools</h1>
+            <div className="text-sm opacity-70 mt-1">Factory: {shortAddr(contracts.factory)}</div>
+            {pairsMeta ? (
+              <>
+                <div className="text-sm opacity-70 mt-1">pairs.json updatedAt: {pairsMeta.updatedAt}</div>
+                <div className="text-sm opacity-70 mt-1">pairs.json count: {pairsMeta.count}</div>
+              </>
+            ) : null}
+          </div>
+          <WalletButton />
+        </div>
+
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <a className="rounded-xl border px-4 py-2 text-sm" href="/">Home</a>
+          <a className="rounded-xl border px-4 py-2 text-sm" href="/swap">Swap</a>
+          <a className="rounded-xl border px-4 py-2 text-sm" href="/pool">Pool</a>
+
+          <div className="ml-auto flex items-center gap-2">
+            <label className="text-sm opacity-70">Pairs limit</label>
+            <input
+              className="w-28 rounded-xl border px-3 py-2 text-sm"
+              value={String(limit)}
+              onChange={(e) => setLimit(Number(e.target.value || "0"))}
+              inputMode="numeric"
+            />
+            <button className="rounded-xl bg-black px-4 py-2 text-sm text-white" onClick={() => void load()}>
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 text-sm opacity-70">Address: {address ? shortAddr(address) : "-"}</div>
+
+        {status ? (
+          <div className="mt-4 rounded-xl border p-3 text-sm">
+            Status: {status}
+          </div>
+        ) : null}
+
+        <div className="mt-4 space-y-3">
+          {rows.map((r) => (
+            <div key={r.pair} className="rounded-2xl border p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-lg font-semibold">
+                  {r.symbol0} / {r.symbol1}
+                </div>
+                <a
+                  className="text-sm underline"
+                  href={`https://turkscan.com/address/${r.pair}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Pair {shortAddr(r.pair)}
+                </a>
+              </div>
+
+              <div className="mt-2 text-sm opacity-80">
+                LP balance: {formatUnits(r.lpBalance, 18)}
+              </div>
+
+              <div className="mt-1 text-sm opacity-80">
+                Reserves: {formatUnits(r.reserve0, r.decimals0)} {r.symbol0} / {formatUnits(r.reserve1, r.decimals1)} {r.symbol1}
+              </div>
+
+              <div className="mt-3">
+                <a
+                  className="rounded-xl border px-4 py-2 text-sm"
+                  href={`/pool?pair=${r.pair}&tokenA=${r.token0}&tokenB=${r.token1}`}
+                >
+                  Manage
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-6 text-xs opacity-60">
+          Production: /pairs.json + Multicall (aggregate3)
+        </div>
+      </div>
+    </main>
+  );
+}

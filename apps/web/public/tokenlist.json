@@ -1,0 +1,20 @@
+{
+  "name": "Turkchain Default Token List",
+  "timestamp": "2026-02-22T00:00:00.000Z",
+  "tokens": [
+    {
+      "chainId": 1919,
+      "address": "0xa1aCbf1244fBb5cabB0b2ef2c2bB40Dbf89a4794",
+      "symbol": "WTC",
+      "decimals": 18,
+      "name": "Wrapped Turk"
+    },
+    {
+      "chainId": 1919,
+      "address": "0x0347c1a533Bf744d06Cea9Fa308FCe7d9336a29a",
+      "symbol": "USDT",
+      "decimals": 6,
+      "name": "Tether USD (Turkchain)"
+    }
+  ]
+}
