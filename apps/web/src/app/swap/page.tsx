@@ -6,7 +6,8 @@ import { contracts } from "@/lib/turkchain";
 import { erc20Abi, routerV2Abi } from "@/lib/abis";
 import { publicClient, getWalletClient } from "@/lib/evm";
 import { useWallet } from "@/lib/useWallet";
-import { loadTokenList, type TokenInfo } from "@/lib/tokenlist";
+import { type TokenInfo } from "@/lib/tokenlist";
+import { loadMergedTokenList } from "@/lib/tokenlists";
 import { formatUnits, parseUnits, type Address, isAddress, zeroAddress } from "viem";
 
 const TURKSCAN_TX = "https://turkscan.com/tx/";
@@ -131,7 +132,7 @@ export default function SwapPage() {
   React.useEffect(() => {
     (async () => {
       try {
-        const list = await loadTokenList();
+        const list = await loadMergedTokenList();
         setTokenList(list);
         if (list.length >= 2) {
           setInToken(list[0]);

@@ -12,3 +12,6 @@ coverage/
 # runtime/generated
 apps/indexer/state.json
 apps/web/public/pairs.json
+
+# backups
+*.bak.*

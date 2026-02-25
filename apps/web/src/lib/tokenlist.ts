@@ -1,11 +1,13 @@
 import type { Address } from "viem";
 
 export type TokenInfo = {
-  chainId: number;
+chainId: number;
   address: Address;
   symbol: string;
   decimals: number;
   name?: string;
+  logoURI?: string;
+
 };
 
 export async function loadTokenList(): Promise<TokenInfo[]> {
